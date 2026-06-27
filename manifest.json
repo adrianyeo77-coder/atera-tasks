@@ -1,0 +1,14 @@
+{
+  "name": "Tasks",
+  "short_name": "Tasks",
+  "description": "A self-hosted Todoist clone.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#ffffff",
+  "theme_color": "#dc4c3e",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

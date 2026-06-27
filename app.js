@@ -12,6 +12,7 @@ const state = {
   tasks: [],
   labels: [],
   groups: [],
+  role: null,
   view: { type: 'today' },
   composer: null,
   editingTaskId: null,
@@ -56,6 +57,9 @@ async function loadState() {
   // Tolerant: if the project_groups migration hasn't run yet, just show no headings (don't break the app).
   const gr = await sb.from('project_groups').select('*').order('position').order('id');
   state.groups = gr.error ? [] : gr.data;
+  // Team role (management / staff). Null = not a team member yet (pre-migration / solo).
+  const rr = await sb.from('team_members').select('role').eq('user_id', uid).maybeSingle();
+  state.role = (!rr || rr.error) ? null : (rr.data ? rr.data.role : null);
   const me = profById[uid] || { name: session.user.user_metadata?.name || session.user.email, email: session.user.email };
   state.user = { id: uid, name: me.name, email: me.email };
 }
@@ -199,8 +203,8 @@ const todayCount = () => state.tasks.filter((t) => !t.completed && t.due_date &&
 const labelCount = (labelId) => state.tasks.filter((t) => !t.completed && (t.label_ids || []).includes(labelId)).length;
 
 function renderSidebar() {
-  const personal = state.projects.filter((p) => !p.is_inbox && p.is_owner);
-  const shared = state.projects.filter((p) => !p.is_inbox && !p.is_owner);
+  const visible = state.projects.filter((p) => !p.is_inbox);
+  const isMgmt = state.role !== 'staff'; // management or not-yet-mapped = full heading controls; only 'staff' is restricted
   const ib = inbox();
   const v = state.view;
   const tc = todayCount();
@@ -235,21 +239,19 @@ function renderSidebar() {
       </button>` : ''}
 
       <div class="nav-section"><span>My Projects</span><button data-action="new-project" title="Add list">+</button></div>
-      ${personal.filter((p) => !p.group_id).map(projItem).join('')}
+      ${visible.filter((p) => !p.group_id).map(projItem).join('')}
 
       ${groupsSorted.map((g) => `
         <div class="nav-section">
-          <span data-action="rename-group" data-id="${g.id}" style="cursor:pointer;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Rename heading">${esc(g.name)}</span>
+          <span ${isMgmt ? `data-action="rename-group" data-id="${g.id}" title="Rename heading" style="cursor:pointer;` : 'style="'}flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(g.name)}</span>
           <span style="display:flex;gap:2px;flex-shrink:0">
             <button data-action="new-project" data-group="${g.id}" title="Add list">+</button>
-            <button data-action="delete-group" data-id="${g.id}" title="Delete heading" style="font-size:13px">🗑</button>
+            ${isMgmt ? `<button data-action="delete-group" data-id="${g.id}" title="Delete heading" style="font-size:13px">🗑</button>` : ''}
           </span>
         </div>
-        ${personal.filter((p) => p.group_id === g.id).map(projItem).join('') || '<div style="color:var(--muted);padding:2px 10px 6px;font-size:12px">No lists yet — tap +</div>'}
+        ${visible.filter((p) => p.group_id === g.id).map(projItem).join('') || '<div style="color:var(--muted);padding:2px 10px 6px;font-size:12px">No lists yet — tap +</div>'}
       `).join('')}
-      <button class="nav-item" data-action="new-group" style="color:var(--muted);margin-top:2px"><span class="ico">＋</span> Add heading</button>
-
-      ${shared.length ? `<div class="nav-section"><span>Shared with me</span></div>${shared.map(projItem).join('')}` : ''}
+      ${isMgmt ? '<button class="nav-item" data-action="new-group" style="color:var(--muted);margin-top:2px"><span class="ico">＋</span> Add heading</button>' : ''}
 
       <div class="nav-section"><span>Labels</span><button data-action="new-label" title="Add label">+</button></div>
       ${state.labels.map((l) => `
@@ -346,6 +348,7 @@ function renderLabelView() {
 function renderProjectView() {
   const p = byId(state.view.projectId);
   if (!p) { state.view = { type: 'today' }; return renderMain(); }
+  const canEdit = state.role !== 'staff' || p.is_owner;
   const all = state.tasks.filter((t) => t.project_id === p.id);
   const active = all.filter((t) => !t.completed);
   const done = all.filter((t) => t.completed);
@@ -370,16 +373,14 @@ function renderProjectView() {
       ${p.is_inbox ? '<span style="font-size:20px">📥</span>' : `<span class="head-color" style="background:${esc(p.color)}"></span>`}
       <h2>${esc(p.name)}</h2>
       <span class="spacer"></span>
-      ${p.members.length > 1 ? `<div class="members">${memberAvatars}</div>` : ''}
-      ${!p.is_inbox && p.is_owner ? `<select class="btn-light" data-action="move-project-group" data-id="${p.id}" title="Move to heading">
+      ${!p.is_inbox && canEdit ? `<select class="btn-light" data-action="move-project-group" data-id="${p.id}" title="Move to heading">
         <option value="">My Projects</option>
         ${(state.groups || []).map((g) => `<option value="${g.id}" ${p.group_id === g.id ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}
       </select>` : ''}
-      ${!p.is_inbox && p.is_owner ? `<button class="btn-light" data-action="share-open" data-id="${p.id}">👥 Share</button>` : ''}
-      ${!p.is_inbox && p.is_owner ? `<button class="btn-light" data-action="add-section" data-id="${p.id}">＃ Section</button>` : ''}
-      ${!p.is_inbox ? `<button class="btn-light" data-action="delete-project" data-id="${p.id}">${p.is_owner ? '🗑 Delete' : '🚪 Leave'}</button>` : ''}
+      ${!p.is_inbox && canEdit ? `<button class="btn-light" data-action="add-section" data-id="${p.id}">＃ Section</button>` : ''}
+      ${!p.is_inbox && canEdit ? `<button class="btn-light" data-action="delete-project" data-id="${p.id}">🗑 Delete</button>` : ''}
     </div>
-    <div class="page-sub">${active.length} active${done.length ? ` · ${done.length} completed` : ''}${p.members.length > 1 ? ` · shared with ${p.members.length - 1}` : ''}</div>
+    <div class="page-sub">${active.length} active${done.length ? ` · ${done.length} completed` : ''}</div>
     ${body}
     ${done.length ? `<div class="section-title" style="margin-top:30px;color:var(--muted)">Completed</div>
       ${done.sort((a, b) => (b.completed_at || '').localeCompare(a.completed_at || '')).map((t) => renderTaskOrEditor(t, { showProject: false })).join('')}` : ''}

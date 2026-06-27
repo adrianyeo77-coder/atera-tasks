@@ -22,8 +22,7 @@ const state = {
 };
 
 const COLORS = ['#dc4c3e', '#eb8909', '#f9d71c', '#7ecc49', '#299438', '#6accbc', '#158fad', '#246fe0', '#884dff', '#eb96eb', '#808080'];
-const RECUR = [['', 'No repeat'], ['daily', 'Daily'], ['weekdays', 'Weekdays'], ['weekly', 'Weekly'], ['monthly', 'Monthly']];
-const RECUR_LABEL = { daily: 'every day', weekdays: 'weekdays', weekly: 'every week', monthly: 'every month' };
+const ASSIGNEES = ['Adrian', 'Tai Kee', 'Rievan', 'Ferdi'];
 
 /* ---------------- Data layer (Supabase) ---------------- */
 function chk(res) { if (res.error) throw new Error(res.error.message); return res.data; }
@@ -96,16 +95,6 @@ const inbox = () => state.projects.find((p) => p.is_inbox);
 
 function localISO(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
 const todayStr = () => localISO(new Date());
-
-function nextDue(dateStr, rec) {
-  const d = new Date((dateStr || todayStr()) + 'T00:00:00');
-  if (rec === 'daily') d.setDate(d.getDate() + 1);
-  else if (rec === 'weekly') d.setDate(d.getDate() + 7);
-  else if (rec === 'monthly') d.setMonth(d.getMonth() + 1);
-  else if (rec === 'weekdays') { do { d.setDate(d.getDate() + 1); } while (d.getDay() === 0 || d.getDay() === 6); }
-  else return null;
-  return localISO(d);
-}
 
 function fmtDue(due) {
   if (!due) return null;
@@ -230,6 +219,7 @@ function renderSidebar() {
       <div class="me">
         <div class="avatar">${esc(initials(state.user.name))}</div>
         <div class="name">${esc(state.user.name)}</div>
+        <button class="icon-btn" data-action="sync" title="Sync now">⟳</button>
         <button class="icon-btn" data-action="toggle-theme" title="Toggle theme">${dark ? '☀️' : '🌙'}</button>
         <button class="icon-btn" data-action="logout" title="Log out">⏻</button>
       </div>
@@ -285,6 +275,7 @@ function renderTopbar() {
     <header class="topbar">
       <button class="hamburger" data-action="toggle-drawer" aria-label="Menu">☰</button>
       <div class="top-title">${esc(viewTitle())}</div>
+      <button class="top-add" data-action="sync" title="Sync" aria-label="Sync">⟳</button>
       <button class="top-add" data-action="topbar-add" aria-label="Add task">+</button>
     </header>`;
 }
@@ -299,8 +290,9 @@ function renderMain() {
 }
 
 function taskSort(a, b) {
-  if (a.priority !== b.priority) return a.priority - b.priority;
   if (a.due_date && b.due_date && a.due_date !== b.due_date) return a.due_date < b.due_date ? -1 : 1;
+  if (a.due_date && !b.due_date) return -1;
+  if (!a.due_date && b.due_date) return 1;
   return a.position - b.position;
 }
 
@@ -399,23 +391,22 @@ function renderTaskOrEditor(t, opts) {
   if (state.editingTaskId === t.id) return renderEditor(t);
   const due = fmtDue(t.due_date);
   const proj = byId(t.project_id);
-  const assignee = t.assignee_id && proj ? proj.members.find((m) => m.id === t.assignee_id) : null;
+  const assignee = t.assigned_to || null;
   const labels = (t.label_ids || []).map(labelById).filter(Boolean);
   return `
     <div class="task ${t.completed ? 'completed' : ''}" data-task="${t.id}">
       <div class="swipe-hint left">✓ Done</div>
       <div class="swipe-hint right">Delete</div>
       <div class="task-inner">
-        <div class="check ${t.completed ? 'done' : 'p' + t.priority}" data-action="task-toggle" data-id="${t.id}"></div>
+        <div class="check ${t.completed ? 'done' : ''}" data-action="task-toggle" data-id="${t.id}"></div>
         <div class="task-body" data-action="task-edit" data-id="${t.id}">
           <div class="task-content">${esc(t.content)}</div>
           ${t.description ? `<div class="task-desc">${esc(t.description)}</div>` : ''}
           <div class="task-meta">
             ${due ? `<span class="meta-due ${due.cls}">📅 ${esc(due.label)}</span>` : ''}
-            ${t.recurrence ? `<span class="meta-due">🔁 ${esc(RECUR_LABEL[t.recurrence] || 'repeats')}</span>` : ''}
             ${opts.showProject && proj ? `<span class="chip"><span class="dot" style="background:${esc(proj.is_inbox ? '#246fe0' : proj.color)}"></span>${esc(proj.name)}</span>` : ''}
             ${labels.map((l) => `<span class="chip label-chip"><span class="dot" style="background:${esc(l.color)}"></span>${esc(l.name)}</span>`).join('')}
-            ${assignee ? `<span class="chip">👤 ${esc(assignee.name)}</span>` : ''}
+            ${assignee ? `<span class="chip">👤 ${esc(assignee)}</span>` : ''}
           </div>
         </div>
         <div class="task-actions">
@@ -426,13 +417,8 @@ function renderTaskOrEditor(t, opts) {
     </div>`;
 }
 
-const priorityOptions = (sel) => [1, 2, 3, 4].map((p) => `<option value="${p}" ${p === sel ? 'selected' : ''}>P${p}${p === 4 ? ' (none)' : ''}</option>`).join('');
 const projectOptions = (sel) => state.projects.map((p) => `<option value="${p.id}" ${p.id === sel ? 'selected' : ''}>${esc(p.is_inbox ? 'Inbox' : p.name)}</option>`).join('');
-const recurrenceOptions = (sel) => RECUR.map(([v, lbl]) => `<option value="${v}" ${v === (sel || '') ? 'selected' : ''}>🔁 ${lbl}</option>`).join('');
-function assigneeOptions(proj, sel) {
-  if (!proj || proj.members.length < 2) return '';
-  return `<select class="e-assignee"><option value="">Unassigned</option>${proj.members.map((m) => `<option value="${m.id}" ${m.id === sel ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select>`;
-}
+const assigneeOptions = (sel) => `<select class="e-assignee"><option value="">Unassigned</option>${ASSIGNEES.map((n) => `<option value="${esc(n)}" ${n === sel ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>`;
 function labelChips(selectedIds) {
   if (!state.labels.length) return '<span class="hint">Create labels in the sidebar to tag tasks</span>';
   const sel = new Set(selectedIds || []);
@@ -444,17 +430,14 @@ function labelChips(selectedIds) {
 }
 
 function renderEditor(t) {
-  const proj = byId(t.project_id);
   return `
     <div class="composer" data-editor="${t.id}">
       <input class="c-content e-content" value="${esc(t.content)}" />
       <textarea class="c-desc e-desc" placeholder="Description">${esc(t.description)}</textarea>
       <div class="composer-controls">
         <input type="date" class="e-due" value="${esc(t.due_date || '')}" />
-        <select class="e-priority">${priorityOptions(t.priority)}</select>
-        <select class="e-recur">${recurrenceOptions(t.recurrence)}</select>
         <select class="e-project">${projectOptions(t.project_id)}</select>
-        ${assigneeOptions(proj, t.assignee_id)}
+        ${assigneeOptions(t.assigned_to)}
       </div>
       <div class="label-row">${labelChips(t.label_ids)}</div>
       <div class="composer-actions">
@@ -468,17 +451,14 @@ function renderComposerSlot(ctx) {
   const c = state.composer;
   const match = c && c.projectId === ctx.projectId && (c.sectionId || null) === (ctx.sectionId || null);
   if (match) {
-    const proj = byId(ctx.projectId);
     return `
       <div class="composer" data-composer="1">
         <input class="c-content" placeholder="Task name" autofocus />
         <textarea class="c-desc" placeholder="Description"></textarea>
         <div class="composer-controls">
           <input type="date" class="c-due" value="${esc(c.due || '')}" />
-          <select class="c-priority">${priorityOptions(4)}</select>
-          <select class="c-recur">${recurrenceOptions('')}</select>
           ${state.view.type !== 'project' ? `<select class="c-project">${projectOptions(ctx.projectId)}</select>` : ''}
-          ${assigneeOptions(proj, null)}
+          ${assigneeOptions('')}
         </div>
         <div class="label-row">${labelChips(c.labelIds)}</div>
         <div class="composer-actions">
@@ -740,9 +720,7 @@ document.addEventListener('click', async (e) => {
           content,
           description: box.querySelector('.c-desc').value.trim(),
           due_date: box.querySelector('.c-due').value || null,
-          priority: Number(box.querySelector('.c-priority').value),
-          recurrence: box.querySelector('.c-recur').value || null,
-          assignee_id: assignee && assignee.value ? assignee.value : null,
+          assigned_to: assignee && assignee.value ? assignee.value : null,
           position: nextPos(projectId),
         }).select().single());
         await setTaskLabels(t.id, gatherLabelIds(box));
@@ -757,14 +735,13 @@ document.addEventListener('click', async (e) => {
 
       case 'task-toggle': {
         const t = state.tasks.find((x) => x.id === id);
-        if (!t.completed && t.recurrence) {
-          const nd = nextDue(t.due_date, t.recurrence);
-          chk(await sb.from('tasks').update({ due_date: nd }).eq('id', id));
-          toast(`Repeats — next: ${fmtDue(nd)?.label || nd}`);
-        } else {
-          chk(await sb.from('tasks').update({ completed: !t.completed, completed_at: !t.completed ? new Date().toISOString() : null }).eq('id', id));
-        }
+        chk(await sb.from('tasks').update({ completed: !t.completed, completed_at: !t.completed ? new Date().toISOString() : null }).eq('id', id));
         return reloadAndRender();
+      }
+      case 'sync': {
+        await reloadAndRender();
+        toast('Synced ✓');
+        return;
       }
       case 'task-edit': state.composer = null; state.editingTaskId = id; return render();
       case 'editor-cancel': state.editingTaskId = null; return render();
@@ -777,10 +754,8 @@ document.addEventListener('click', async (e) => {
           content,
           description: box.querySelector('.e-desc').value.trim(),
           due_date: box.querySelector('.e-due').value || null,
-          priority: Number(box.querySelector('.e-priority').value),
-          recurrence: box.querySelector('.e-recur').value || null,
           project_id: Number(box.querySelector('.e-project').value),
-          assignee_id: assignee && assignee.value ? assignee.value : null,
+          assigned_to: assignee && assignee.value ? assignee.value : null,
         }).eq('id', id));
         await setTaskLabels(id, gatherLabelIds(box));
         state.editingTaskId = null;
@@ -837,13 +812,7 @@ document.addEventListener('touchend', async () => {
     if (dx > TH) {
       inner.style.transform = 'translateX(110%)';
       const t = state.tasks.find((x) => x.id === id);
-      if (!t.completed && t.recurrence) {
-        const nd = nextDue(t.due_date, t.recurrence);
-        chk(await sb.from('tasks').update({ due_date: nd }).eq('id', id));
-        toast(`Repeats — next: ${fmtDue(nd)?.label || nd}`);
-      } else {
-        chk(await sb.from('tasks').update({ completed: !t.completed, completed_at: !t.completed ? new Date().toISOString() : null }).eq('id', id));
-      }
+      chk(await sb.from('tasks').update({ completed: !t.completed, completed_at: !t.completed ? new Date().toISOString() : null }).eq('id', id));
       await reloadAndRender();
     } else if (dx < -TH) {
       inner.style.transform = 'translateX(-110%)';

@@ -11,6 +11,7 @@ const state = {
   projects: [],
   tasks: [],
   labels: [],
+  groups: [],
   view: { type: 'today' },
   composer: null,
   editingTaskId: null,
@@ -53,6 +54,9 @@ async function loadState() {
   });
   state.tasks = tasks.map((t) => ({ ...t, label_ids: taskLabels.filter((x) => x.task_id === t.id).map((x) => x.label_id) }));
   state.labels = labels;
+  // Tolerant: if the project_groups migration hasn't run yet, just show no headings (don't break the app).
+  const gr = await sb.from('project_groups').select('*').order('position').order('id');
+  state.groups = gr.error ? [] : gr.data;
   const me = profById[uid] || { name: session.user.user_metadata?.name || session.user.email, email: session.user.email };
   state.user = { id: uid, name: me.name, email: me.email };
 }
@@ -71,7 +75,7 @@ const nextPos = (projectId) => {
 function subscribeRealtime() {
   if (realtimeChannel) return;
   let ch = sb.channel('db-changes');
-  ['tasks', 'projects', 'project_members', 'sections', 'labels', 'task_labels'].forEach((table) => {
+  ['tasks', 'projects', 'project_members', 'sections', 'labels', 'task_labels', 'project_groups'].forEach((table) => {
     ch = ch.on('postgres_changes', { event: '*', schema: 'tasks_app', table }, () => scheduleReload());
   });
   realtimeChannel = ch.subscribe();
@@ -87,6 +91,7 @@ const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&':
 const initials = (name) => (name || '?').trim().split(/\s+/).map((w) => w[0]).slice(0, 2).join('').toUpperCase();
 const byId = (id) => state.projects.find((p) => p.id === id);
 const labelById = (id) => state.labels.find((l) => l.id === id);
+const groupById = (id) => (state.groups || []).find((g) => g.id === id);
 const inbox = () => state.projects.find((p) => p.is_inbox);
 
 function localISO(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
@@ -211,6 +216,7 @@ function renderSidebar() {
   const v = state.view;
   const tc = todayCount();
   const dark = effectiveTheme() === 'dark';
+  const groupsSorted = (state.groups || []).slice().sort((a, b) => (a.position - b.position) || (a.id - b.id));
   const projItem = (p) => `
     <button class="nav-item ${v.type === 'project' && v.projectId === p.id ? 'active' : ''}" data-action="select-project" data-id="${p.id}">
       <span class="dot" style="background:${esc(p.color)}"></span>
@@ -238,8 +244,20 @@ function renderSidebar() {
         <span class="ico">📥</span> Inbox ${activeCount(ib.id) ? `<span class="count">${activeCount(ib.id)}</span>` : ''}
       </button>` : ''}
 
-      <div class="nav-section"><span>My Projects</span><button data-action="new-project" title="Add project">+</button></div>
-      ${personal.map(projItem).join('') || '<div style="color:var(--muted);padding:4px 10px;font-size:13px">No projects yet</div>'}
+      <div class="nav-section"><span>My Projects</span><button data-action="new-project" title="Add list">+</button></div>
+      ${personal.filter((p) => !p.group_id).map(projItem).join('')}
+
+      ${groupsSorted.map((g) => `
+        <div class="nav-section">
+          <span data-action="rename-group" data-id="${g.id}" style="cursor:pointer;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Rename heading">${esc(g.name)}</span>
+          <span style="display:flex;gap:2px;flex-shrink:0">
+            <button data-action="new-project" data-group="${g.id}" title="Add list">+</button>
+            <button data-action="delete-group" data-id="${g.id}" title="Delete heading" style="font-size:13px">🗑</button>
+          </span>
+        </div>
+        ${personal.filter((p) => p.group_id === g.id).map(projItem).join('') || '<div style="color:var(--muted);padding:2px 10px 6px;font-size:12px">No lists yet — tap +</div>'}
+      `).join('')}
+      <button class="nav-item" data-action="new-group" style="color:var(--muted);margin-top:2px"><span class="ico">＋</span> Add heading</button>
 
       ${shared.length ? `<div class="nav-section"><span>Shared with me</span></div>${shared.map(projItem).join('')}` : ''}
 
@@ -361,6 +379,10 @@ function renderProjectView() {
       <h2>${esc(p.name)}</h2>
       <span class="spacer"></span>
       ${p.members.length > 1 ? `<div class="members">${memberAvatars}</div>` : ''}
+      ${!p.is_inbox && p.is_owner ? `<select class="btn-light" data-action="move-project-group" data-id="${p.id}" title="Move to heading">
+        <option value="">My Projects</option>
+        ${(state.groups || []).map((g) => `<option value="${g.id}" ${p.group_id === g.id ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}
+      </select>` : ''}
       ${!p.is_inbox && p.is_owner ? `<button class="btn-light" data-action="share-open" data-id="${p.id}">👥 Share</button>` : ''}
       ${!p.is_inbox && p.is_owner ? `<button class="btn-light" data-action="add-section" data-id="${p.id}">＃ Section</button>` : ''}
       ${!p.is_inbox ? `<button class="btn-light" data-action="delete-project" data-id="${p.id}">${p.is_owner ? '🗑 Delete' : '🚪 Leave'}</button>` : ''}
@@ -478,9 +500,14 @@ function renderModal() {
     return `
       <div class="modal-bg" data-action="modal-bg">
         <div class="modal" data-stop="1">
-          <h3>New ${isLabel ? 'label' : 'project'}</h3>
+          <h3>New ${isLabel ? 'label' : 'list'}</h3>
           <label>Name</label>
-          <input class="m-name" placeholder="${isLabel ? 'e.g. Errands' : 'e.g. Groceries'}" autofocus />
+          <input class="m-name" placeholder="${isLabel ? 'e.g. Errands' : 'e.g. Leads'}" autofocus />
+          ${isLabel ? '' : `<label>Heading</label>
+          <select class="m-group">
+            <option value="">My Projects</option>
+            ${(state.groups || []).map((g) => `<option value="${g.id}" ${state.modal.groupId === g.id ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}
+          </select>`}
           <label>Color</label>
           <div class="colors">${COLORS.map((c, i) => `<span class="swatch ${i === 0 ? 'sel' : ''}" data-action="modal-color" data-color="${c}" style="background:${c}"></span>`).join('')}</div>
           <div class="modal-actions">
@@ -599,7 +626,7 @@ document.addEventListener('click', async (e) => {
         return render();
       }
 
-      case 'new-project': state.modal = { type: 'project', color: COLORS[0] }; return render();
+      case 'new-project': state.modal = { type: 'project', color: COLORS[0], groupId: el.dataset.group ? Number(el.dataset.group) : null }; return render();
       case 'new-label': state.modal = { type: 'label', color: COLORS[0] }; return render();
       case 'modal-cancel': case 'modal-bg':
         if (action === 'modal-bg' && e.target.closest('[data-stop]')) return;
@@ -610,12 +637,33 @@ document.addEventListener('click', async (e) => {
         return;
       case 'modal-create-project': {
         const name = document.querySelector('.m-name').value.trim();
-        if (!name) return toast('Give the project a name');
+        if (!name) return toast('Give the list a name');
+        const groupSel = document.querySelector('.m-group');
+        const group_id = groupSel ? (groupSel.value ? Number(groupSel.value) : null) : (state.modal.groupId || null);
         const ps = state.projects.filter((p) => p.is_owner && !p.is_inbox).map((p) => p.position);
-        const p = chk(await sb.from('projects').insert({ owner_id: uid, name, color: state.modal.color, position: (ps.length ? Math.max(...ps) : 0) + 1 }).select().single());
+        const p = chk(await sb.from('projects').insert({ owner_id: uid, name, color: state.modal.color, group_id, position: (ps.length ? Math.max(...ps) : 0) + 1 }).select().single());
         state.modal = null; await loadState();
         state.view = { type: 'project', projectId: p.id };
         return render();
+      }
+      case 'new-group': {
+        const name = prompt('Heading name:');
+        if (!name || !name.trim()) return;
+        const gs = (state.groups || []).map((g) => g.position);
+        chk(await sb.from('project_groups').insert({ owner_id: uid, name: name.trim(), position: (gs.length ? Math.max(...gs) : 0) + 1 }));
+        return reloadAndRender();
+      }
+      case 'rename-group': {
+        const g = groupById(id);
+        const name = prompt('Rename heading:', g ? g.name : '');
+        if (!name || !name.trim()) return;
+        chk(await sb.from('project_groups').update({ name: name.trim() }).eq('id', id));
+        return reloadAndRender();
+      }
+      case 'delete-group': {
+        if (!confirm('Delete this heading? Its lists move back to "My Projects" — nothing is deleted.')) return;
+        chk(await sb.from('project_groups').delete().eq('id', id));
+        return reloadAndRender();
       }
       case 'modal-create-label': {
         const name = document.querySelector('.m-name').value.trim();
@@ -742,6 +790,16 @@ document.addEventListener('click', async (e) => {
         chk(await sb.from('tasks').delete().eq('id', id));
         return reloadAndRender();
     }
+  } catch (err) { toast(err.message); }
+});
+
+/* ---------------- Move a list to a different heading (select change) ---------------- */
+document.addEventListener('change', async (e) => {
+  const el = e.target.closest('[data-action="move-project-group"]');
+  if (!el) return;
+  try {
+    chk(await sb.from('projects').update({ group_id: el.value ? Number(el.value) : null }).eq('id', Number(el.dataset.id)));
+    await reloadAndRender();
   } catch (err) { toast(err.message); }
 });
 

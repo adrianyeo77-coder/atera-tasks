@@ -99,6 +99,157 @@ function unsubscribeRealtime() {
 let reloadTimer;
 function scheduleReload() { clearTimeout(reloadTimer); reloadTimer = setTimeout(reloadAndRender, 250); }
 
+/* ---------------- Offline engine ----------------
+   The ONLINE path is unchanged — every handler still talks straight to Supabase.
+   When the device is offline, task add/edit/complete/delete are applied to a
+   local copy and recorded in a durable outbox (localStorage). On reconnect the
+   outbox is flushed in order (last-sync-wins) and merged with the server.
+   New lists / labels / headings stay online-only (rare on a phone).            */
+const CACHE_PREFIX = 'atera-tasks-cache:';
+const OUTBOX_PREFIX = 'atera-tasks-outbox:';
+let outbox = [];
+let flushing = false;
+let _tmpSeq = -1;   // ever-decreasing negative ids for offline-created tasks (numeric => existing Number(id) handlers work; never collide with real positive ids)
+const nowISO = () => new Date().toISOString();
+const tmpId = () => _tmpSeq--;
+
+const cacheKey = () => CACHE_PREFIX + (uid || 'anon');
+const outboxKey = () => OUTBOX_PREFIX + (uid || 'anon');
+function saveCache() {
+  if (!state.user) return;
+  try {
+    localStorage.setItem(cacheKey(), JSON.stringify({
+      projects: state.projects, tasks: state.tasks, labels: state.labels,
+      groups: state.groups, role: state.role, user: state.user,
+    }));
+  } catch (e) { /* quota — fine to skip */ }
+}
+function loadCache() {
+  try {
+    const c = JSON.parse(localStorage.getItem(cacheKey()) || 'null');
+    if (c && c.user) {
+      state.projects = c.projects || []; state.tasks = c.tasks || []; state.labels = c.labels || [];
+      state.groups = c.groups || []; state.role = c.role || null; state.user = c.user;
+      return true;
+    }
+  } catch (e) {}
+  return false;
+}
+function loadOutbox() {
+  try { outbox = JSON.parse(localStorage.getItem(outboxKey()) || '[]') || []; } catch (e) { outbox = []; }
+  // Keep the temp-id generator below any still-pending offline ids so a reload can't reissue a colliding id.
+  for (const o of outbox) {
+    if (typeof o.tempId === 'number' && o.tempId <= _tmpSeq) _tmpSeq = o.tempId - 1;
+    if (typeof o.id === 'number' && o.id < 0 && o.id <= _tmpSeq) _tmpSeq = o.id - 1;
+  }
+}
+function saveOutbox() { try { localStorage.setItem(outboxKey(), JSON.stringify(outbox)); } catch (e) {} }
+
+// Apply one queued op to the in-memory state (also used to overlay unsynced work after a server pull).
+function applyOp(op) {
+  if (op.kind === 'task.create') {
+    if (state.tasks.some((x) => x.id === op.tempId)) return; // idempotent overlay
+    state.tasks.push({
+      id: op.tempId, project_id: op.payload.project_id, section_id: op.payload.section_id,
+      content: op.payload.content, description: op.payload.description || '', due_date: op.payload.due_date || null,
+      assigned_to: op.payload.assigned_to || null, completed: false, completed_at: null,
+      position: op.payload.position, label_ids: (op.labelIds || []).slice(), updated_at: op.ts, _pending: true,
+    });
+  } else if (op.kind === 'task.update') {
+    const t = state.tasks.find((x) => x.id === op.id); if (!t) return;
+    const p = { ...op.patch };
+    if ('label_ids' in p) { t.label_ids = (p.label_ids || []).slice(); delete p.label_ids; }
+    Object.assign(t, p, { updated_at: op.ts, _pending: true });
+  } else if (op.kind === 'task.delete') {
+    state.tasks = state.tasks.filter((x) => x.id !== op.id);
+  }
+}
+// Record an offline change: queue it, apply locally, persist, reflect in the UI banner.
+function enqueue(op) { outbox.push(op); saveOutbox(); applyOp(op); saveCache(); updateConn(); }
+
+// After a queued create is inserted for real, swap its temp id for the server id everywhere.
+function remapId(tmp, real) {
+  const t = state.tasks.find((x) => x.id === tmp); if (t) { t.id = real; delete t._pending; }
+  for (const o of outbox) if (o.id === tmp) o.id = real;
+  saveOutbox(); saveCache();
+}
+
+// Push the outbox to Supabase, in order. Stops (keeps the queue) if the network drops.
+async function flush() {
+  if (flushing || !navigator.onLine || !outbox.length) return;
+  flushing = true;
+  try {
+    while (outbox.length && navigator.onLine) {
+      const op = outbox[0];
+      try {
+        if (op.kind === 'task.create') {
+          const ins = chk(await sb.from('tasks').insert(op.payload).select().single());
+          if (op.labelIds && op.labelIds.length) await setTaskLabels(ins.id, op.labelIds);
+          remapId(op.tempId, ins.id);
+        } else if (op.kind === 'task.update') {
+          let gone = false, headsUp = false;
+          try {
+            const cur = await sb.from('tasks').select('updated_at').eq('id', op.id).maybeSingle();
+            if (cur && !cur.error) {
+              if (cur.data == null) gone = true;
+              else if (op.baseUpdatedAt && cur.data.updated_at && cur.data.updated_at !== op.baseUpdatedAt) headsUp = true;
+            }
+          } catch (e) { /* updated_at not present (pre-migration) → no heads-up, still apply */ }
+          if (gone) {
+            toast(`“${(op.label || 'A task').slice(0, 22)}” was removed on another device`);
+          } else {
+            const fields = { ...op.patch };
+            if ('label_ids' in fields) { await setTaskLabels(op.id, fields.label_ids); delete fields.label_ids; }
+            if (Object.keys(fields).length) chk(await sb.from('tasks').update(fields).eq('id', op.id));
+            if (headsUp) toast(`“${(op.label || 'A task').slice(0, 22)}” was also edited on another device — your change was kept`);
+          }
+        } else if (op.kind === 'task.delete') {
+          chk(await sb.from('tasks').delete().eq('id', op.id));
+        }
+        outbox.shift(); saveOutbox(); updateConn();
+      } catch (e) {
+        if (!navigator.onLine) break;   // connection dropped mid-flush → keep op, retry on reconnect
+        console.error('Sync: dropping a change that the server rejected (avoids a stuck queue):', op, e);
+        toast('A change could not be saved: ' + e.message);
+        outbox.shift(); saveOutbox(); updateConn();
+      }
+    }
+  } finally { flushing = false; }
+}
+
+// Pull fresh server state, then overlay any still-unsynced local work on top.
+async function pull() {
+  await loadState();
+  if (!state.user) return;
+  for (const op of outbox) applyOp(op);
+}
+// Full reconcile: flush queued changes, pull, keep unsynced work, repaint. No-op offline.
+async function sync() {
+  if (!navigator.onLine) { updateConn(); return; }
+  await flush();
+  await pull();
+  saveCache(); render(); updateConn();
+}
+
+// Small fixed banner: offline status / pending-change count.
+function updateConn() {
+  let bar = document.getElementById('connbar');
+  if (!bar) { bar = document.createElement('div'); bar.id = 'connbar'; document.body.appendChild(bar); }
+  const off = !navigator.onLine, pend = outbox.length;
+  if (off) {
+    bar.className = 'connbar off';
+    bar.textContent = pend
+      ? `⚡ Offline — ${pend} change${pend > 1 ? 's' : ''} will sync when you reconnect`
+      : '⚡ Offline — keep working; changes sync when you reconnect';
+  } else if (pend) {
+    bar.className = 'connbar syncing';
+    bar.textContent = `Syncing ${pend} change${pend > 1 ? 's' : ''}…`;
+  } else {
+    bar.style.display = 'none'; return;
+  }
+  bar.style.display = 'block';
+}
+
 /* ---------------- Helpers ---------------- */
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const initials = (name) => (name || '?').trim().split(/\s+/).map((w) => w[0]).slice(0, 2).join('').toUpperCase();
@@ -602,9 +753,15 @@ function renderModal() {
 
 /* ---------------- Event handling ---------------- */
 async function reloadAndRender() {
-  try { await loadState(); render(); }
+  try { await sync(); }
   catch (e) { toast(e.message); }
 }
+// Structural changes (lists / sections / labels / headings / sharing) are online-only.
+const NEEDS_ONLINE = new Set([
+  'modal-create-project', 'modal-create-label', 'new-group', 'rename-group', 'delete-group',
+  'delete-label', 'delete-project', 'add-section', 'delete-section',
+  'share-open', 'share-submit', 'share-remove',
+]);
 const gatherLabelIds = (box) => [...box.querySelectorAll('.lchip.sel')].map((c) => Number(c.dataset.id));
 
 document.addEventListener('submit', async (e) => {
@@ -654,6 +811,8 @@ document.addEventListener('click', async (e) => {
   if (!el) return;
   const action = el.dataset.action;
   const id = Number(el.dataset.id);
+
+  if (!navigator.onLine && NEEDS_ONLINE.has(action)) return toast('You’re offline — reconnect to change lists, headings or labels.');
 
   try {
     switch (action) {
@@ -729,7 +888,7 @@ document.addEventListener('click', async (e) => {
         const group_id = groupSel ? (groupSel.value ? Number(groupSel.value) : null) : (state.modal.groupId || null);
         const ps = state.projects.filter((p) => p.is_owner && !p.is_inbox).map((p) => p.position);
         const p = chk(await sb.from('projects').insert({ owner_id: uid, name, color: state.modal.color, group_id, position: (ps.length ? Math.max(...ps) : 0) + 1 }).select().single());
-        state.modal = null; await loadState();
+        state.modal = null; await pull();
         state.view = { type: 'project', projectId: p.id };
         return render();
       }
@@ -756,7 +915,7 @@ document.addEventListener('click', async (e) => {
         const name = document.querySelector('.m-name').value.trim();
         if (!name) return toast('Give the label a name');
         const l = chk(await sb.from('labels').insert({ owner_id: uid, name, color: state.modal.color }).select().single());
-        state.modal = null; await loadState();
+        state.modal = null; await pull();
         state.view = { type: 'label', labelId: l.id };
         return render();
       }
@@ -776,11 +935,11 @@ document.addEventListener('click', async (e) => {
         if (prof.id === uid) return toast('You already own this project');
         const r = await sb.from('project_members').insert({ project_id: id, user_id: prof.id, role: 'member' });
         if (r.error && !/duplicate|unique/i.test(r.error.message)) throw new Error(r.error.message);
-        await loadState(); toast('Invited!'); return render();
+        await pull(); toast('Invited!'); return render();
       }
       case 'share-remove': {
         chk(await sb.from('project_members').delete().eq('project_id', Number(el.dataset.project)).eq('user_id', el.dataset.user));
-        await loadState(); return render();
+        await pull(); return render();
       }
 
       case 'delete-project': {
@@ -830,6 +989,20 @@ document.addEventListener('click', async (e) => {
         const projSel = box.querySelector('.c-project');
         const assignee = box.querySelector('.e-assignee');
         const projectId = projSel ? Number(projSel.value) : state.composer.projectId;
+        if (!navigator.onLine) {
+          enqueue({
+            kind: 'task.create', tempId: tmpId(), ts: nowISO(),
+            payload: {
+              project_id: projectId, section_id: state.composer.sectionId, content,
+              description: box.querySelector('.c-desc').value.trim(),
+              due_date: box.querySelector('.c-due').value || null,
+              assigned_to: assignee && assignee.value ? assignee.value : null,
+              position: nextPos(projectId),
+            },
+            labelIds: gatherLabelIds(box),
+          });
+          return render(); // keep composer open for rapid entry
+        }
         const t = chk(await sb.from('tasks').insert({
           project_id: projectId,
           section_id: state.composer.sectionId,
@@ -840,7 +1013,7 @@ document.addEventListener('click', async (e) => {
           position: nextPos(projectId),
         }).select().single());
         await setTaskLabels(t.id, gatherLabelIds(box));
-        await loadState();
+        await pull();
         return render(); // keep composer open for rapid entry
       }
 
@@ -851,12 +1024,21 @@ document.addEventListener('click', async (e) => {
 
       case 'task-toggle': {
         const t = state.tasks.find((x) => x.id === id);
+        if (!navigator.onLine) {
+          enqueue({ kind: 'task.update', id, ts: nowISO(), label: t && t.content, baseUpdatedAt: t && t.updated_at,
+            patch: { completed: !t.completed, completed_at: !t.completed ? nowISO() : null } });
+          return render();
+        }
         chk(await sb.from('tasks').update({ completed: !t.completed, completed_at: !t.completed ? new Date().toISOString() : null }).eq('id', id));
         return reloadAndRender();
       }
       case 'sync': {
+        if (!navigator.onLine) {
+          updateConn();
+          return toast(outbox.length ? `Offline — ${outbox.length} change${outbox.length > 1 ? 's' : ''} waiting to sync` : 'Offline — no connection right now');
+        }
         await reloadAndRender();
-        toast('Synced ✓');
+        toast(outbox.length ? 'Syncing… some changes still pending' : 'Synced ✓');
         return;
       }
       case 'task-edit': state.composer = null; state.editingTaskId = id; return render();
@@ -866,18 +1048,27 @@ document.addEventListener('click', async (e) => {
         const content = box.querySelector('.e-content').value.trim();
         if (!content) return toast('Task name is required');
         const assignee = box.querySelector('.e-assignee');
-        chk(await sb.from('tasks').update({
+        const patch = {
           content,
           description: box.querySelector('.e-desc').value.trim(),
           due_date: box.querySelector('.e-due').value || null,
           project_id: Number(box.querySelector('.e-project').value),
           assigned_to: assignee && assignee.value ? assignee.value : null,
-        }).eq('id', id));
+        };
+        if (!navigator.onLine) {
+          const tk = state.tasks.find((x) => x.id === id);
+          enqueue({ kind: 'task.update', id, ts: nowISO(), label: content, baseUpdatedAt: tk && tk.updated_at,
+            patch: { ...patch, label_ids: gatherLabelIds(box) } });
+          state.editingTaskId = null;
+          return render();
+        }
+        chk(await sb.from('tasks').update(patch).eq('id', id));
         await setTaskLabels(id, gatherLabelIds(box));
         state.editingTaskId = null;
         return reloadAndRender();
       }
       case 'task-delete':
+        if (!navigator.onLine) { enqueue({ kind: 'task.delete', id, ts: nowISO() }); return render(); }
         chk(await sb.from('tasks').delete().eq('id', id));
         return reloadAndRender();
     }
@@ -888,6 +1079,7 @@ document.addEventListener('click', async (e) => {
 document.addEventListener('change', async (e) => {
   const el = e.target.closest('[data-action="move-project-group"]');
   if (!el) return;
+  if (!navigator.onLine) return toast('You’re offline — reconnect to move lists between headings.');
   try {
     chk(await sb.from('projects').update({ group_id: el.value ? Number(el.value) : null }).eq('id', Number(el.dataset.id)));
     await reloadAndRender();
@@ -928,10 +1120,16 @@ document.addEventListener('touchend', async () => {
     if (dx > TH) {
       inner.style.transform = 'translateX(110%)';
       const t = state.tasks.find((x) => x.id === id);
+      if (!navigator.onLine) {
+        enqueue({ kind: 'task.update', id, ts: nowISO(), label: t && t.content, baseUpdatedAt: t && t.updated_at,
+          patch: { completed: !t.completed, completed_at: !t.completed ? nowISO() : null } });
+        return render();
+      }
       chk(await sb.from('tasks').update({ completed: !t.completed, completed_at: !t.completed ? new Date().toISOString() : null }).eq('id', id));
       await reloadAndRender();
     } else if (dx < -TH) {
       inner.style.transform = 'translateX(-110%)';
+      if (!navigator.onLine) { enqueue({ kind: 'task.delete', id, ts: nowISO() }); return render(); }
       chk(await sb.from('tasks').delete().eq('id', id));
       await reloadAndRender();
     } else {
@@ -967,7 +1165,26 @@ document.addEventListener('touchend', async () => {
   sb.auth.onAuthStateChange((event) => {
     if (event === 'SIGNED_OUT') { state.user = null; state.authView = 'pick'; state.authRole = null; render(); }
   });
-  try { await loadState(); } catch (e) { console.error(e); state.user = null; }
+
+  // Service worker → the app shell loads with no network.
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+
+  // Resolve the signed-in user from the locally-persisted session (works offline),
+  // then paint immediately from cache so the app is usable before/without network.
+  try {
+    const { data: { session } } = await sb.auth.getSession();
+    if (session) { uid = session.user.id; loadOutbox(); if (loadCache()) render(); }
+  } catch (e) {}
+
+  // Reconnect → flush the outbox and reconcile; go offline → update the banner.
+  window.addEventListener('online', () => { updateConn(); sync(); });
+  window.addEventListener('offline', updateConn);
+
+  if (navigator.onLine) {
+    try { await sync(); } catch (e) { console.error(e); }
+    if (!state.user) { try { await loadState(); } catch (e2) { state.user = null; } }
+  }
   if (state.user) subscribeRealtime();
   render();
+  updateConn();
 })();

@@ -172,6 +172,14 @@ a { color: var(--p3); }
 .composer-details[hidden] { display: none; }
 .composer-more { margin-top: 8px; color: var(--muted); font-size: 13px; padding: 4px 0; text-align: left; }
 .composer-more:hover { color: var(--accent); }
+
+/* ---------- Offline / sync banner ---------- */
+#connbar { position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: calc(14px + env(safe-area-inset-bottom)); z-index: 60; max-width: 92vw;
+  padding: 8px 15px; border-radius: 999px; font-size: 13px; font-weight: 600;
+  box-shadow: var(--shadow); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#connbar.off { background: #f4a700; color: #241700; }
+#connbar.syncing { background: var(--accent); color: #fff; }
 .lchip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 20px; border: 1px solid var(--border); cursor: pointer; font-size: 13px; }
 .lchip .dot { width: 9px; height: 9px; border-radius: 50%; }
 .lchip.sel { color: #fff; border-color: transparent; }

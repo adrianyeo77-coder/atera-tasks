@@ -530,19 +530,26 @@ function renderTodayView() {
 }
 
 function renderUpcomingView() {
-  const tasks = state.tasks
-    .filter((t) => !t.completed && t.due_date && t.due_date > todayStr())
+  // Everything else you're allowed to see that isn't in Today: future-dated tasks
+  // (grouped by date) plus tasks with no due date (a "No date" section at the end).
+  const visible = state.tasks.filter((t) => !t.completed && (!t.due_date || t.due_date > todayStr()));
+  const dated = visible.filter((t) => t.due_date)
     .sort((a, b) => (a.due_date < b.due_date ? -1 : a.due_date > b.due_date ? 1 : taskSort(a, b)));
+  const undated = visible.filter((t) => !t.due_date).sort(taskSort);
   const groups = {};
-  tasks.forEach((t) => { (groups[t.due_date] ||= []).push(t); });
+  dated.forEach((t) => { (groups[t.due_date] ||= []).push(t); });
   const dates = Object.keys(groups).sort();
   return `
     <div class="page-head"><h2>Upcoming</h2></div>
-    ${dates.length ? dates.map((d) => {
+    <div class="page-sub">${visible.length} task${visible.length === 1 ? '' : 's'}</div>
+    ${dates.map((d) => {
       const f = fmtDue(d);
       return `<div class="section-title">${esc(f.label)} <span class="count">· ${new Date(d + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</span></div>
         ${groups[d].map((t) => renderTaskOrEditor(t, { showProject: true })).join('')}`;
-    }).join('') : `<div class="empty"><div class="big">🌤️</div>Nothing scheduled ahead.</div>`}
+    }).join('')}
+    ${undated.length ? `<div class="section-title">No date <span class="count">· ${undated.length}</span></div>
+      ${undated.map((t) => renderTaskOrEditor(t, { showProject: true })).join('')}` : ''}
+    ${visible.length ? '' : `<div class="empty"><div class="big">🌤️</div>Nothing else to see.</div>`}
     ${renderComposerSlot({ projectId: inbox().id, due: '' })}
   `;
 }

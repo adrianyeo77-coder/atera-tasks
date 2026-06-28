@@ -53,6 +53,36 @@ a { color: var(--p3); }
 .auth-toggle button { color: var(--accent); font-weight: 600; }
 .auth-error { background: #fdecea; color: #b3271b; padding: 10px 12px; border-radius: 8px; margin-top: 16px; font-size: 13px; }
 
+/* ---------- Role picker + PIN pad ---------- */
+.role-pick { display: flex; flex-direction: column; gap: 12px; margin-top: 6px; }
+.role-btn { display: flex; align-items: center; gap: 14px; width: 100%; text-align: left;
+  padding: 16px 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg);
+  color: var(--text); transition: border-color .15s, background .15s, transform .05s; }
+.role-btn:hover { border-color: var(--accent); background: var(--hover); }
+.role-btn:active { transform: scale(.99); }
+.role-emoji { font-size: 26px; line-height: 1; }
+.role-text { display: flex; flex-direction: column; gap: 2px; }
+.role-name { font-weight: 700; font-size: 16px; }
+.role-desc { color: var(--muted); font-size: 12px; }
+.role-go { margin-left: auto; color: var(--muted); font-size: 20px; }
+
+.pin-card { position: relative; }
+.pin-back { position: absolute; top: 16px; left: 16px; color: var(--muted); font-weight: 600; font-size: 13px; padding: 4px 6px; border-radius: 6px; }
+.pin-back:hover { background: var(--hover); color: var(--text); }
+.pin-card h1 { margin-top: 14px; }
+.pin-input { width: 100%; text-align: center; letter-spacing: 10px; font-size: 26px;
+  padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
+  caret-color: transparent; cursor: default; }
+.pin-input:focus { outline: none; border-color: var(--accent); }
+.keypad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 18px; }
+.key { padding: 16px 0; font-size: 22px; font-weight: 600; border-radius: 12px; background: var(--surface);
+  border: 1px solid var(--border); color: var(--text); transition: background .1s, transform .05s; }
+.key:hover { background: var(--hover); }
+.key:active { transform: scale(.96); }
+.key-sub { font-size: 18px; color: var(--muted); }
+.key-go { background: var(--accent); color: #fff; border-color: var(--accent); font-size: 24px; }
+.key-go:hover { background: var(--accent-dark); }
+
 /* ---------- App layout ---------- */
 .app-grid { display: grid; grid-template-columns: 280px 1fr; height: 100vh; }
 .sidebar { background: var(--surface-2); border-right: 1px solid var(--border); padding: 16px 8px; overflow-y: auto; }

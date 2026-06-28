@@ -18,12 +18,22 @@ const state = {
   editingTaskId: null,
   modal: null,
   drawerOpen: false,
-  authMode: 'login',
+  authView: 'pick',   // 'pick' (role buttons) | 'pin' (numeric PIN) | 'email' (classic form)
+  authRole: null,     // which role's PIN screen we're on ('management' | 'staff')
+  authMode: 'login',  // within the 'email' view: 'login' | 'register'
   authError: '',
 };
 
 const COLORS = ['#dc4c3e', '#eb8909', '#f9d71c', '#7ecc49', '#299438', '#6accbc', '#158fad', '#246fe0', '#884dff', '#eb96eb', '#808080'];
 const ASSIGNEES = ['Adrian', 'Tai Kee', 'Rievan', 'Ferdi'];
+
+// The two shared team logins. Tapping a button just pre-fills the email; the user
+// types that account's PIN (= its Supabase password). Emails are NOT secret — the
+// PIN is the only secret, and it's never stored in the app, only typed each time.
+const ROLE_LOGINS = {
+  management: { label: 'AW Management', email: 'awmanagement@aterawater.com', emoji: '🛠️', desc: 'All lists' },
+  staff:      { label: 'AW Staff',      email: 'awstaff@aterawater.com',     emoji: '👤', desc: 'BD lists only' },
+};
 
 /* ---------------- Data layer (Supabase) ---------------- */
 function chk(res) { if (res.error) throw new Error(res.error.message); return res.data; }
@@ -174,12 +184,71 @@ function renderConfigError() {
 
 /* ---------------- Auth ---------------- */
 function renderAuth() {
+  if (state.authView === 'email') return renderAuthEmail();
+  if (state.authView === 'pin') return renderAuthPin();
+  return renderAuthPick();
+}
+
+// Default screen: choose which shared login you are.
+function renderAuthPick() {
+  root.innerHTML = `
+    <div class="auth-wrap">
+      <div class="auth-card">
+        <h1>✅ Atera Tasks</h1>
+        <div class="sub">Who's logging in?</div>
+        <div class="role-pick">
+          ${['management', 'staff'].map((r) => {
+            const role = ROLE_LOGINS[r];
+            return `<button class="role-btn role-${r}" data-action="auth-pick-role" data-role="${r}">
+                      <span class="role-emoji">${role.emoji}</span>
+                      <span class="role-text"><span class="role-name">${role.label}</span><span class="role-desc">${role.desc}</span></span>
+                      <span class="role-go">→</span>
+                    </button>`;
+          }).join('')}
+        </div>
+        ${state.authError ? `<div class="auth-error">${esc(state.authError)}</div>` : ''}
+        <div class="auth-toggle"><button data-action="auth-email-mode">Other login</button></div>
+      </div>
+    </div>`;
+}
+
+// PIN pad for the chosen role. The hidden email + typed PIN go through the normal
+// login submit handler (signInWithPassword). The on-screen keypad is the only input,
+// so the PIN is always numeric and behaves the same on phone and desktop.
+function renderAuthPin() {
+  const role = ROLE_LOGINS[state.authRole];
+  if (!role) { state.authView = 'pick'; return renderAuthPick(); }
+  root.innerHTML = `
+    <div class="auth-wrap">
+      <div class="auth-card pin-card">
+        <button class="pin-back" data-action="auth-pick-back">← back</button>
+        <h1>${role.emoji} ${role.label}</h1>
+        <div class="sub">Enter your PIN</div>
+        <form data-action="auth-submit" class="pin-form" autocomplete="off">
+          <input type="hidden" name="email" value="${role.email}" />
+          <input id="pinField" name="password" type="password" inputmode="numeric"
+                 autocomplete="off" readonly class="pin-input" placeholder="••••••" />
+          <div class="keypad">
+            ${[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => `<button type="button" class="key" data-action="pin-key" data-key="${n}">${n}</button>`).join('')}
+            <button type="button" class="key key-sub" data-action="pin-del">⌫</button>
+            <button type="button" class="key" data-action="pin-key" data-key="0">0</button>
+            <button type="submit" class="key key-go">→</button>
+          </div>
+        </form>
+        ${state.authError ? `<div class="auth-error">${esc(state.authError)}</div>` : ''}
+      </div>
+    </div>`;
+}
+
+// Classic email/password — kept for Adrian's personal account and account setup.
+function renderAuthEmail() {
   const isLogin = state.authMode === 'login';
   root.innerHTML = `
     <div class="auth-wrap">
       <div class="auth-card">
+        <button class="pin-back" data-action="auth-pick-back">← back</button>
         <h1>✅ Tasks</h1>
-        <div class="sub">${isLogin ? 'Log in to your task list' : 'Create your account'}</div>
+        <div class="sub">${isLogin ? 'Log in with email' : 'Create an account'}</div>
         <form data-action="auth-submit">
           ${isLogin ? '' : '<label>Name</label><input name="name" autocomplete="name" required />'}
           <label>Email</label>
@@ -552,7 +621,12 @@ document.addEventListener('submit', async (e) => {
     subscribeRealtime();
     render();
   } catch (err) {
-    state.authError = err.message;
+    let msg = err.message;
+    if (state.authView === 'pin') {
+      if (/invalid login credentials/i.test(msg)) msg = 'Incorrect PIN — try again.';
+      else if (/api key|jwt/i.test(msg)) msg = 'Login config error — tell Adrian.';
+    }
+    state.authError = msg;
     renderAuth();
   }
 });
@@ -583,10 +657,37 @@ document.addEventListener('click', async (e) => {
         state.authError = '';
         return renderAuth();
 
+      case 'auth-pick-role':
+        state.authRole = el.dataset.role;
+        state.authView = 'pin';
+        state.authMode = 'login';
+        state.authError = '';
+        return renderAuth();
+
+      case 'auth-pick-back':
+        state.authView = 'pick'; state.authRole = null; state.authError = '';
+        return renderAuth();
+
+      case 'auth-email-mode':
+        state.authView = 'email'; state.authMode = 'login'; state.authError = '';
+        return renderAuth();
+
+      case 'pin-key': {
+        const f = document.getElementById('pinField');
+        if (f && f.value.length < 12) f.value += el.dataset.key;
+        return;
+      }
+      case 'pin-del': {
+        const f = document.getElementById('pinField');
+        if (f) f.value = f.value.slice(0, -1);
+        return;
+      }
+
       case 'logout':
         unsubscribeRealtime();
         await sb.auth.signOut();
         state.user = null; state.view = { type: 'today' }; state.drawerOpen = false;
+        state.authView = 'pick'; state.authRole = null; state.authError = '';
         return render();
 
       case 'toggle-theme': return toggleTheme();
@@ -850,7 +951,7 @@ document.addEventListener('touchend', async () => {
     },
   });
   sb.auth.onAuthStateChange((event) => {
-    if (event === 'SIGNED_OUT') { state.user = null; render(); }
+    if (event === 'SIGNED_OUT') { state.user = null; state.authView = 'pick'; state.authRole = null; render(); }
   });
   try { await loadState(); } catch (e) { console.error(e); state.user = null; }
   if (state.user) subscribeRealtime();

@@ -169,6 +169,9 @@ a { color: var(--p3); }
 .composer-controls input[type=date], .composer-controls select { padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .label-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; align-items: center; }
 .label-row .hint { color: var(--muted); font-size: 12px; }
+.composer-details[hidden] { display: none; }
+.composer-more { margin-top: 8px; color: var(--muted); font-size: 13px; padding: 4px 0; text-align: left; }
+.composer-more:hover { color: var(--accent); }
 .lchip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 20px; border: 1px solid var(--border); cursor: pointer; font-size: 13px; }
 .lchip .dot { width: 9px; height: 9px; border-radius: 50%; }
 .lchip.sel { color: #fff; border-color: transparent; }

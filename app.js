@@ -521,16 +521,21 @@ function renderComposerSlot(ctx) {
   const c = state.composer;
   const match = c && c.projectId === ctx.projectId && (c.sectionId || null) === (ctx.sectionId || null);
   if (match) {
+    // Minimal by default: just the task name + Add task. Date / assignee / notes
+    // stay hidden inside .composer-details until the user taps "Add details".
     return `
       <div class="composer" data-composer="1">
         <input class="c-content" placeholder="Task name" autofocus />
-        <textarea class="c-desc" placeholder="Description"></textarea>
-        <div class="composer-controls">
-          <input type="date" class="c-due" value="${esc(c.due || '')}" />
-          ${state.view.type !== 'project' ? `<select class="c-project">${projectOptions(ctx.projectId)}</select>` : ''}
-          ${assigneeOptions('')}
+        <div class="composer-details" data-details hidden>
+          <textarea class="c-desc" placeholder="Description"></textarea>
+          <div class="composer-controls">
+            <input type="date" class="c-due" value="${esc(c.due || '')}" />
+            ${state.view.type !== 'project' ? `<select class="c-project">${projectOptions(ctx.projectId)}</select>` : ''}
+            ${assigneeOptions('')}
+          </div>
+          <div class="label-row">${labelChips(c.labelIds)}</div>
         </div>
-        <div class="label-row">${labelChips(c.labelIds)}</div>
+        <button type="button" class="composer-more" data-action="composer-details">＋ Add date, assignee &amp; notes</button>
         <div class="composer-actions">
           <button class="btn cancel" data-action="composer-cancel">Cancel</button>
           <button class="btn save" data-action="composer-save">Add task</button>
@@ -808,6 +813,15 @@ document.addEventListener('click', async (e) => {
           labelIds: el.dataset.labels ? el.dataset.labels.split(',').filter(Boolean).map(Number) : [],
         };
         return render();
+      case 'composer-details': {
+        const box = el.closest('[data-composer]');
+        if (box) {
+          box.querySelector('[data-details]')?.removeAttribute('hidden');
+          el.remove(); // drop the "Add details" toggle once expanded
+          box.querySelector('.c-desc')?.focus();
+        }
+        return; // no re-render — keeps the half-typed task name intact
+      }
       case 'composer-cancel': state.composer = null; return render();
       case 'composer-save': {
         const box = el.closest('[data-composer]');

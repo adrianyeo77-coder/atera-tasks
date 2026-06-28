@@ -833,7 +833,22 @@ document.addEventListener('touchend', async () => {
   // This app lives in its own `tasks_app` schema (shares the Supabase project
   // with the Deals App / site-visit app, but never touches their `public` tables).
   // `tasks_app` must be added under Project Settings → API → Exposed schemas.
-  sb = window.supabase.createClient(CONFIG.url, CONFIG.anonKey, { db: { schema: 'tasks_app' } });
+  //
+  // IMPORTANT: this app is served from the SAME origin as the Site Visits / Deals
+  // apps (all under adrianyeo77-coder.github.io) and uses the SAME Supabase project.
+  // supabase-js defaults its session storage key to `sb-<project-ref>-auth-token`,
+  // so without a distinct storageKey ALL those apps would share one login slot and
+  // clobber each other's session (logging into one logs the others out / invalidates
+  // their refresh token). A unique storageKey isolates this app's login completely.
+  sb = window.supabase.createClient(CONFIG.url, CONFIG.anonKey, {
+    db: { schema: 'tasks_app' },
+    auth: {
+      storageKey: 'atera-tasks-auth',
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: false,
+    },
+  });
   sb.auth.onAuthStateChange((event) => {
     if (event === 'SIGNED_OUT') { state.user = null; render(); }
   });

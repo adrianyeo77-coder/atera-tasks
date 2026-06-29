@@ -893,6 +893,7 @@ document.addEventListener('click', async (e) => {
         else if (v.type === 'label') state.composer = { projectId: inbox().id, sectionId: null, due: '', labelIds: [v.labelId] };
         else state.composer = { projectId: inbox().id, sectionId: null, due: v.type === 'today' ? todayStr() : '' };
         state.editingTaskId = null;
+        state.drawerOpen = false; // mobile: close the sidebar so the add panel is visible
         return render();
       }
 
@@ -996,6 +997,7 @@ document.addEventListener('click', async (e) => {
           due: el.dataset.due || '',
           labelIds: el.dataset.labels ? el.dataset.labels.split(',').filter(Boolean).map(Number) : [],
         };
+        state.drawerOpen = false; // mobile: close the sidebar so the add panel is visible
         return render();
       case 'composer-details': {
         const box = el.closest('[data-composer]');

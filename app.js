@@ -458,20 +458,13 @@ function renderSidebar() {
         <span class="ico">📥</span> Inbox ${inboxCount() ? `<span class="count">${inboxCount()}</span>` : ''}
       </button>
 
-      <div class="nav-section"><span>My Projects</span><button data-action="new-project" title="Add list">+</button></div>
-      ${visible.filter((p) => !p.group_id).map(projItem).join('')}
-
       ${groupsSorted.map((g) => `
         <div class="nav-section">
           <span ${isMgmt ? `data-action="rename-group" data-id="${g.id}" title="Rename heading" style="cursor:pointer;` : 'style="'}flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(g.name)}</span>
-          <span style="display:flex;gap:2px;flex-shrink:0">
-            <button data-action="new-project" data-group="${g.id}" title="Add list">+</button>
-            ${isMgmt ? `<button data-action="delete-group" data-id="${g.id}" title="Delete heading" style="font-size:13px">🗑</button>` : ''}
-          </span>
+          <button data-action="new-project" data-group="${g.id}" title="Add list" style="flex-shrink:0">+</button>
         </div>
         ${visible.filter((p) => p.group_id === g.id).map(projItem).join('') || '<div style="color:var(--muted);padding:2px 10px 6px;font-size:12px">No lists yet — tap +</div>'}
       `).join('')}
-      ${isMgmt ? '<button class="nav-item" data-action="new-group" style="color:var(--muted);margin-top:2px"><span class="ico">＋</span> Add heading</button>' : ''}
 
       <div class="nav-section"><span>Labels</span><button data-action="new-label" title="Add label">+</button></div>
       ${state.labels.map((l) => `

@@ -5,7 +5,7 @@
    ⚠️ BUMP `CACHE` (v1 -> v2 -> ...) on EVERY deploy, or browsers keep the old
    shell from cache and your changes won't show. The activate handler deletes
    old caches, so bumping the version string is the whole update. */
-const CACHE = 'atera-tasks-v4';
+const CACHE = 'atera-tasks-v5';
 const SHELL = [
   './', './index.html', './app.js', './config.js', './styles.css',
   './manifest.json', './icon.svg',

@@ -617,7 +617,7 @@ function renderProjectView() {
       <h2>${esc(p.name)}</h2>
       <span class="spacer"></span>
       ${!p.is_inbox && canEdit ? `<select class="btn-light" data-action="move-project-group" data-id="${p.id}" title="Move to heading">
-        <option value="">My Projects</option>
+        ${!p.group_id ? '<option value="" disabled selected>Move to heading…</option>' : ''}
         ${(state.groups || []).map((g) => `<option value="${g.id}" ${p.group_id === g.id ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}
       </select>` : ''}
       ${!p.is_inbox && canEdit ? `<button class="btn-light" data-action="add-section" data-id="${p.id}">＃ Section</button>` : ''}
@@ -734,7 +734,7 @@ function renderModal() {
           <input class="m-name" placeholder="${isLabel ? 'e.g. Errands' : 'e.g. Leads'}" autofocus />
           ${isLabel ? '' : `<label>Heading</label>
           <select class="m-group">
-            <option value="">My Projects</option>
+            ${!state.modal.groupId ? '<option value="" disabled selected>Choose a heading…</option>' : ''}
             ${(state.groups || []).map((g) => `<option value="${g.id}" ${state.modal.groupId === g.id ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}
           </select>`}
           <label>Color</label>
@@ -910,6 +910,7 @@ document.addEventListener('click', async (e) => {
         if (!name) return toast('Give the list a name');
         const groupSel = document.querySelector('.m-group');
         const group_id = groupSel ? (groupSel.value ? Number(groupSel.value) : null) : (state.modal.groupId || null);
+        if (!group_id) return toast('Pick a heading for this list');
         const ps = state.projects.filter((p) => p.is_owner && !p.is_inbox).map((p) => p.position);
         const p = chk(await sb.from('projects').insert({ owner_id: uid, name, color: state.modal.color, group_id, position: (ps.length ? Math.max(...ps) : 0) + 1 }).select().single());
         state.modal = null; await pull();

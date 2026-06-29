@@ -5,7 +5,7 @@
 const CACHE = 'atera-tasks-v7';
 const SHELL = [
   './', './index.html', './app.js', './config.js', './styles.css',
-  './manifest.json', './icon.svg',
+  './manifest.json', './icon.svg', './icon-192.png', './icon-512.png', './apple-touch-icon.png',
   'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2',
 ];
 

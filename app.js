@@ -420,12 +420,12 @@ function renderAuthEmail() {
 /* ---------------- Sidebar ---------------- */
 const activeCount = (projectId) => state.tasks.filter((t) => t.project_id === projectId && !t.completed).length;
 const todayCount = () => state.tasks.filter((t) => !t.completed && t.due_date && t.due_date <= todayStr()).length;
+const inboxCount = () => state.tasks.filter((t) => !t.completed).length;
 const labelCount = (labelId) => state.tasks.filter((t) => !t.completed && (t.label_ids || []).includes(labelId)).length;
 
 function renderSidebar() {
   const visible = state.projects.filter((p) => !p.is_inbox);
   const isMgmt = state.role !== 'staff'; // management or not-yet-mapped = full heading controls; only 'staff' is restricted
-  const ib = inbox();
   const v = state.view;
   const tc = todayCount();
   const dark = effectiveTheme() === 'dark';
@@ -454,9 +454,9 @@ function renderSidebar() {
       <button class="nav-item ${v.type === 'upcoming' ? 'active' : ''}" data-action="view-upcoming">
         <span class="ico">🗓️</span> Upcoming
       </button>
-      ${ib ? `<button class="nav-item ${v.type === 'project' && v.projectId === ib.id ? 'active' : ''}" data-action="select-project" data-id="${ib.id}">
-        <span class="ico">📥</span> Inbox ${activeCount(ib.id) ? `<span class="count">${activeCount(ib.id)}</span>` : ''}
-      </button>` : ''}
+      <button class="nav-item ${v.type === 'inbox' ? 'active' : ''}" data-action="view-inbox">
+        <span class="ico">📥</span> Inbox ${inboxCount() ? `<span class="count">${inboxCount()}</span>` : ''}
+      </button>
 
       <div class="nav-section"><span>My Projects</span><button data-action="new-project" title="Add list">+</button></div>
       ${visible.filter((p) => !p.group_id).map(projItem).join('')}
@@ -488,6 +488,7 @@ function viewTitle() {
   const v = state.view;
   if (v.type === 'today') return 'Today';
   if (v.type === 'upcoming') return 'Upcoming';
+  if (v.type === 'inbox') return '📥 Inbox';
   if (v.type === 'label') { const l = labelById(v.labelId); return l ? `🏷 ${l.name}` : 'Label'; }
   if (v.type === 'project') { const p = byId(v.projectId); return p ? (p.is_inbox ? '📥 Inbox' : p.name) : 'Project'; }
   return 'Tasks';
@@ -506,6 +507,7 @@ function renderTopbar() {
 function renderMain() {
   if (state.view.type === 'today') return renderTodayView();
   if (state.view.type === 'upcoming') return renderUpcomingView();
+  if (state.view.type === 'inbox') return renderInboxView();
   if (state.view.type === 'label') return renderLabelView();
   if (state.view.type === 'project') return renderProjectView();
   return '';
@@ -550,6 +552,27 @@ function renderUpcomingView() {
     ${undated.length ? `<div class="section-title">No date <span class="count">· ${undated.length}</span></div>
       ${undated.map((t) => renderTaskOrEditor(t, { showProject: true })).join('')}` : ''}
     ${visible.length ? '' : `<div class="empty"><div class="big">🌤️</div>Nothing else to see.</div>`}
+    ${renderComposerSlot({ projectId: inbox().id, due: '' })}
+  `;
+}
+
+function renderInboxView() {
+  // Everything you're allowed to see (today + upcoming = all not-completed), grouped
+  // by who has to do it. RLS already limits state.tasks to what you can see.
+  const all = state.tasks.filter((t) => !t.completed);
+  const extra = [...new Set(all.map((t) => t.assigned_to).filter((a) => a && !ASSIGNEES.includes(a)))];
+  const buckets = [...ASSIGNEES, ...extra, '__unassigned__'];
+  const sections = buckets.map((who) => {
+    const isUn = who === '__unassigned__';
+    const tasks = all.filter((t) => (isUn ? !t.assigned_to : t.assigned_to === who)).sort(taskSort);
+    if (!tasks.length) return '';
+    return `<div class="section-title">${esc(isUn ? 'Unassigned' : who)} <span class="count">· ${tasks.length}</span></div>
+      ${tasks.map((t) => renderTaskOrEditor(t, { showProject: true })).join('')}`;
+  }).filter(Boolean).join('');
+  return `
+    <div class="page-head"><h2>📥 Inbox</h2></div>
+    <div class="page-sub">${all.length} task${all.length === 1 ? '' : 's'} · grouped by who's doing it</div>
+    ${sections || `<div class="empty"><div class="big">📭</div>No tasks to show.</div>`}
     ${renderComposerSlot({ projectId: inbox().id, due: '' })}
   `;
 }
@@ -867,6 +890,7 @@ document.addEventListener('click', async (e) => {
 
       case 'view-today': state.view = { type: 'today' }; state.composer = null; state.editingTaskId = null; state.drawerOpen = false; return render();
       case 'view-upcoming': state.view = { type: 'upcoming' }; state.composer = null; state.editingTaskId = null; state.drawerOpen = false; return render();
+      case 'view-inbox': state.view = { type: 'inbox' }; state.composer = null; state.editingTaskId = null; state.drawerOpen = false; return render();
       case 'select-project': state.view = { type: 'project', projectId: id }; state.composer = null; state.editingTaskId = null; state.drawerOpen = false; return render();
       case 'select-label': state.view = { type: 'label', labelId: id }; state.composer = null; state.editingTaskId = null; state.drawerOpen = false; return render();
 

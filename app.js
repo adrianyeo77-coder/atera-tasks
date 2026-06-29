@@ -978,6 +978,7 @@ document.addEventListener('click', async (e) => {
       case 'add-section': {
         const name = prompt('Section name:');
         if (!name || !name.trim()) return;
+        state.drawerOpen = false; // mobile: close the sidebar so the new section is visible
         const ss = state.projects.find((p) => p.id === id)?.sections.map((s) => s.position) || [];
         chk(await sb.from('sections').insert({ project_id: id, name: name.trim(), position: (ss.length ? Math.max(...ss) : 0) + 1 }));
         return reloadAndRender();

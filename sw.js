@@ -1,11 +1,8 @@
 /* Service worker — offline app shell for Atera Tasks.
-   Caches the static files so the app opens with NO network. Supabase API/auth/
-   storage calls are never cached (always go to the network).
-
-   ⚠️ BUMP `CACHE` (v1 -> v2 -> ...) on EVERY deploy, or browsers keep the old
-   shell from cache and your changes won't show. The activate handler deletes
-   old caches, so bumping the version string is the whole update. */
-const CACHE = 'atera-tasks-v6';
+   NETWORK-FIRST: when online it always fetches the latest files (so updates show
+   on a single reload — no cache-bump dance), and it falls back to the cache only
+   when offline. Supabase API/auth/storage calls are never cached. */
+const CACHE = 'atera-tasks-v7';
 const SHELL = [
   './', './index.html', './app.js', './config.js', './styles.css',
   './manifest.json', './icon.svg',
@@ -32,13 +29,14 @@ self.addEventListener('fetch', (e) => {
   const isShell = url.origin === location.origin
     || url.href.startsWith('https://cdn.jsdelivr.net/npm/@supabase/supabase-js');
   if (!isShell) return;
-  // Cache-first for the shell; fall back to network (and runtime-cache it), then
-  // to the cached index for navigations so the app still opens offline.
+  // Network-first: fetch fresh when online (and refresh the cache for offline use);
+  // fall back to the cache only when the network fails, then to the cached index
+  // for navigations so the app still opens offline.
   e.respondWith(
-    caches.match(req).then((hit) => hit || fetch(req).then((res) => {
+    fetch(req).then((res) => {
       const copy = res.clone();
       caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
       return res;
-    }).catch(() => (req.mode === 'navigate' ? caches.match('./index.html') : undefined)))
+    }).catch(() => caches.match(req).then((hit) => hit || (req.mode === 'navigate' ? caches.match('./index.html') : undefined)))
   );
 });

@@ -897,8 +897,8 @@ document.addEventListener('click', async (e) => {
         return render();
       }
 
-      case 'new-project': state.modal = { type: 'project', color: COLORS[0], groupId: el.dataset.group ? Number(el.dataset.group) : null }; return render();
-      case 'new-label': state.modal = { type: 'label', color: COLORS[0] }; return render();
+      case 'new-project': state.modal = { type: 'project', color: COLORS[0], groupId: el.dataset.group ? Number(el.dataset.group) : null }; state.drawerOpen = false; return render();
+      case 'new-label': state.modal = { type: 'label', color: COLORS[0] }; state.drawerOpen = false; return render();
       case 'modal-cancel': case 'modal-bg':
         if (action === 'modal-bg' && e.target.closest('[data-stop]')) return;
         state.modal = null; return render();

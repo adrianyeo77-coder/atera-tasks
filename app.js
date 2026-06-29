@@ -1194,8 +1194,45 @@ document.addEventListener('touchend', async () => {
     if (event === 'SIGNED_OUT') { state.user = null; state.authView = 'pick'; state.authRole = null; render(); }
   });
 
-  // Service worker → the app shell loads with no network.
+  // Service worker → the app shell loads with no network (network-first; fresh when online).
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+
+  // Auto-update: reload to the newest deployed version whenever one appears, no manual
+  // refresh. The SW is network-first, so a reload already pulls fresh files — we just
+  // need to NOTICE a new version. We watch the ETag (or Last-Modified) of app.js, which
+  // GitHub Pages sends, so this needs no per-deploy cache bump. The HEAD request is GET-
+  // exempt from the SW and `no-store`, so it always hits the server. Checked on load,
+  // on foreground, on reconnect, on bfcache restore, and hourly; throttled to once/30s;
+  // the reload is deferred while a modal/compose/edit box is open so it can't interrupt typing.
+  (async function autoUpdate() {
+    const versionOf = async () => {
+      try {
+        const r = await fetch('app.js', { method: 'HEAD', cache: 'no-store' });
+        return r.headers.get('etag') || r.headers.get('last-modified') || null;
+      } catch (e) { return null; }
+    };
+    const busy = () => !!(state.modal || state.composer || state.editingTaskId != null
+      || document.querySelector('.modal-bg, [data-composer], [data-editor]'));
+    let baseline = await versionOf();   // marker for the version currently running
+    let last = 0, reloading = false;
+    const reloadSoon = () => {
+      if (reloading) return;
+      if (busy()) { setTimeout(reloadSoon, 3000); return; } // wait until they've finished typing
+      reloading = true; location.reload();
+    };
+    const check = async () => {
+      if (!navigator.onLine) return;
+      const t = Date.now(); if (t - last < 30000) return; last = t; // throttle: once / 30s
+      const v = await versionOf();
+      if (v == null) return;
+      if (baseline == null) { baseline = v; return; }
+      if (v !== baseline) reloadSoon();
+    };
+    setInterval(check, 60 * 60 * 1000);
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') check(); });
+    window.addEventListener('online', check);
+    window.addEventListener('pageshow', check);
+  })();
 
   // Resolve the signed-in user from the locally-persisted session (works offline),
   // then paint immediately from cache so the app is usable before/without network.

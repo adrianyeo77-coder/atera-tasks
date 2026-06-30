@@ -170,6 +170,8 @@ function applyOp(op) {
         p.sections.push({ id: op.tempId, project_id: op.payload.project_id, name: op.payload.name, position: op.payload.position, _pending: true });
       }
     }
+  } else if (op.kind === 'section.update') {
+    for (const p of state.projects) { const s = (p.sections || []).find((x) => x.id === op.id); if (s) { Object.assign(s, op.patch, { _pending: true }); break; } }
   }
 }
 // Record an offline change: queue it, apply locally, persist, reflect in the UI banner.
@@ -229,6 +231,8 @@ async function flush() {
         } else if (op.kind === 'section.create') {
           const ins = chk(await sb.from('sections').insert(op.payload).select().single());
           remapSection(op.tempId, ins.id);
+        } else if (op.kind === 'section.update') {
+          if (Object.keys(op.patch).length) chk(await sb.from('sections').update(op.patch).eq('id', op.id));
         }
         outbox.shift(); saveOutbox(); updateConn();
       } catch (e) {
@@ -461,7 +465,6 @@ const labelCount = (labelId) => state.tasks.filter((t) => !t.completed && (t.lab
 
 function renderSidebar() {
   const visible = state.projects.filter((p) => !p.is_inbox);
-  const isMgmt = state.role !== 'staff'; // management or not-yet-mapped = full heading controls; only 'staff' is restricted
   const v = state.view;
   const tc = todayCount();
   const dark = effectiveTheme() === 'dark';
@@ -496,7 +499,7 @@ function renderSidebar() {
 
       ${groupsSorted.map((g) => `
         <div class="nav-section">
-          <span ${isMgmt ? `data-action="rename-group" data-id="${g.id}" title="Rename heading" style="cursor:pointer;` : 'style="'}flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(g.name)}</span>
+          <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(g.name)}</span>
           <button data-action="new-project" data-group="${g.id}" title="Add list" style="flex-shrink:0">+</button>
         </div>
         ${visible.filter((p) => p.group_id === g.id).map(projItem).join('') || '<div style="color:var(--muted);padding:2px 10px 6px;font-size:12px">No lists yet — tap +</div>'}
@@ -643,7 +646,8 @@ function renderProjectView() {
   let body = renderGroup(null);
   for (const s of p.sections) {
     body += `<div class="section-title">${esc(s.name)} <span class="count">${active.filter((t) => t.section_id === s.id).length}</span>
-      <button class="icon-btn" data-action="delete-section" data-id="${s.id}" title="Delete section" style="margin-left:auto">🗑</button></div>`;
+      <button class="icon-btn" data-action="rename-section" data-id="${s.id}" title="Rename section" style="margin-left:auto">✎</button>
+      <button class="icon-btn" data-action="delete-section" data-id="${s.id}" title="Delete section">🗑</button></div>`;
     body += renderGroup(s.id);
   }
 
@@ -1023,6 +1027,22 @@ document.addEventListener('click', async (e) => {
           return render();
         }
         chk(await sb.from('sections').insert({ project_id: id, name: name.trim(), position }));
+        return reloadAndRender();
+      }
+      case 'rename-section': {
+        let sec = null;
+        for (const p of state.projects) { const f = (p.sections || []).find((x) => x.id === id); if (f) { sec = f; break; } }
+        const input = prompt('Rename section:', sec ? sec.name : '');
+        if (input == null) return;
+        const nm = input.trim();
+        if (!nm) return;
+        if (id < 0) { // a not-yet-synced offline section: just edit its queued create op + local name
+          for (const o of outbox) if (o.kind === 'section.create' && o.tempId === id) o.payload.name = nm;
+          if (sec) sec.name = nm;
+          saveOutbox(); saveCache(); return render();
+        }
+        if (!navigator.onLine) { enqueue({ kind: 'section.update', id, ts: nowISO(), patch: { name: nm } }); return render(); }
+        chk(await sb.from('sections').update({ name: nm }).eq('id', id));
         return reloadAndRender();
       }
       case 'delete-section': {

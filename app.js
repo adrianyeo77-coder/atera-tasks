@@ -162,15 +162,36 @@ function applyOp(op) {
     Object.assign(t, p, { updated_at: op.ts, _pending: true });
   } else if (op.kind === 'task.delete') {
     state.tasks = state.tasks.filter((x) => x.id !== op.id);
+  } else if (op.kind === 'section.create') {
+    const p = state.projects.find((x) => x.id === op.payload.project_id);
+    if (p) {
+      p.sections = p.sections || [];
+      if (!p.sections.some((s) => s.id === op.tempId)) {
+        p.sections.push({ id: op.tempId, project_id: op.payload.project_id, name: op.payload.name, position: op.payload.position, _pending: true });
+      }
+    }
   }
 }
 // Record an offline change: queue it, apply locally, persist, reflect in the UI banner.
 function enqueue(op) { outbox.push(op); saveOutbox(); applyOp(op); saveCache(); updateConn(); }
 
-// After a queued create is inserted for real, swap its temp id for the server id everywhere.
+// After a queued task create is inserted for real, swap its temp id for the server id everywhere.
 function remapId(tmp, real) {
   const t = state.tasks.find((x) => x.id === tmp); if (t) { t.id = real; delete t._pending; }
   for (const o of outbox) if (o.id === tmp) o.id = real;
+  saveOutbox(); saveCache();
+}
+
+// Same, for an offline-created section: fix its id on the project, on any tasks placed
+// inside it, and on still-queued ops that reference it as section_id (e.g. a task created
+// under this section before the section had synced).
+function remapSection(tmp, real) {
+  for (const p of state.projects) { const s = (p.sections || []).find((x) => x.id === tmp); if (s) { s.id = real; delete s._pending; } }
+  for (const t of state.tasks) if (t.section_id === tmp) t.section_id = real;
+  for (const o of outbox) {
+    if (o.payload && o.payload.section_id === tmp) o.payload.section_id = real;
+    if (o.patch && o.patch.section_id === tmp) o.patch.section_id = real;
+  }
   saveOutbox(); saveCache();
 }
 
@@ -205,13 +226,28 @@ async function flush() {
           }
         } else if (op.kind === 'task.delete') {
           chk(await sb.from('tasks').delete().eq('id', op.id));
+        } else if (op.kind === 'section.create') {
+          const ins = chk(await sb.from('sections').insert(op.payload).select().single());
+          remapSection(op.tempId, ins.id);
         }
         outbox.shift(); saveOutbox(); updateConn();
       } catch (e) {
         if (!navigator.onLine) break;   // connection dropped mid-flush → keep op, retry on reconnect
         console.error('Sync: dropping a change that the server rejected (avoids a stuck queue):', op, e);
-        toast('A change could not be saved: ' + e.message);
-        outbox.shift(); saveOutbox(); updateConn();
+        if (op.kind === 'section.create') {
+          // The section never landed → detach its dependents so their inserts/updates don't
+          // FK-violate (the tasks fall back to the list root instead of being lost with it).
+          for (const o of outbox) {
+            if (o.payload && o.payload.section_id === op.tempId) o.payload.section_id = null;
+            if (o.patch && o.patch.section_id === op.tempId) o.patch.section_id = null;
+          }
+          for (const t of state.tasks) if (t.section_id === op.tempId) t.section_id = null;
+          for (const p of state.projects) if (p.sections) p.sections = p.sections.filter((s) => s.id !== op.tempId);
+          toast('Couldn’t create the section — its tasks were kept at the list root');
+        } else {
+          toast('A change could not be saved: ' + e.message);
+        }
+        outbox.shift(); saveOutbox(); saveCache(); updateConn();
       }
     }
   } finally { flushing = false; }
@@ -779,10 +815,11 @@ async function reloadAndRender() {
   try { await sync(); }
   catch (e) { toast(e.message); }
 }
-// Structural changes (lists / sections / labels / headings / sharing) are online-only.
+// Structural changes (lists / labels / headings / sharing, and deleting sections) are
+// online-only. Adding a task or a SECTION works offline (queued in the outbox).
 const NEEDS_ONLINE = new Set([
   'modal-create-project', 'modal-create-label', 'new-group', 'rename-group', 'delete-group',
-  'delete-label', 'delete-project', 'add-section', 'delete-section',
+  'delete-label', 'delete-project',
   'share-open', 'share-submit', 'share-remove',
 ]);
 const gatherLabelIds = (box) => [...box.querySelectorAll('.lchip.sel')].map((c) => Number(c.dataset.id));
@@ -980,11 +1017,28 @@ document.addEventListener('click', async (e) => {
         if (!name || !name.trim()) return;
         state.drawerOpen = false; // mobile: close the sidebar so the new section is visible
         const ss = state.projects.find((p) => p.id === id)?.sections.map((s) => s.position) || [];
-        chk(await sb.from('sections').insert({ project_id: id, name: name.trim(), position: (ss.length ? Math.max(...ss) : 0) + 1 }));
+        const position = (ss.length ? Math.max(...ss) : 0) + 1;
+        if (!navigator.onLine) {
+          enqueue({ kind: 'section.create', tempId: tmpId(), ts: nowISO(), payload: { project_id: id, name: name.trim(), position } });
+          return render();
+        }
+        chk(await sb.from('sections').insert({ project_id: id, name: name.trim(), position }));
         return reloadAndRender();
       }
       case 'delete-section': {
         if (!confirm('Delete this section? Tasks inside it will move to the project root.')) return;
+        if (id < 0) { // a not-yet-synced offline section: undo it locally, never hit the server
+          outbox = outbox.filter((o) => !(o.kind === 'section.create' && o.tempId === id));
+          for (const o of outbox) {
+            if (o.payload && o.payload.section_id === id) o.payload.section_id = null;
+            if (o.patch && o.patch.section_id === id) o.patch.section_id = null;
+          }
+          for (const t of state.tasks) if (t.section_id === id) t.section_id = null;
+          for (const p of state.projects) if (p.sections) p.sections = p.sections.filter((s) => s.id !== id);
+          saveOutbox(); saveCache(); updateConn();
+          return render();
+        }
+        if (!navigator.onLine) return toast('You’re offline — reconnect to delete a synced section.');
         chk(await sb.from('tasks').update({ section_id: null }).eq('section_id', id));
         chk(await sb.from('sections').delete().eq('id', id));
         return reloadAndRender();
